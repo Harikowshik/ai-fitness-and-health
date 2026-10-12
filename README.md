@@ -1,6 +1,6 @@
 # 🏋️‍♂️ AI Health & Fitness Planner Pro
 
-An intelligent, full-stack health, nutrition, and exercise planning system engineered using **Agno Multi-Agent Architecture** and **Google Gemini LLMs**.
+An intelligent, full-stack health, nutrition, and exercise planning system engineered using **LangGraph Multi-Agent Architecture** and **Google Gemini LLMs**.
 
 This application transforms personal biometrics, dietary restrictions, and fitness goals into deeply personalized daily nutrition blueprints, targeted workout regimens, aisle-categorized grocery checklists, and an interactive AI fitness coach.
 
@@ -11,7 +11,7 @@ This application transforms personal biometrics, dietary restrictions, and fitne
 - [Architectural Overview](#-architectural-overview)
 - [System Workflow Diagram](#-system-workflow-diagram)
 - [Deep Dive: Core Concepts & Methodologies](#-deep-dive-core-concepts--methodologies)
-  - [1. Agno Multi-Agent Framework](#1-agno-multi-agent-framework)
+  - [1. LangGraph Multi-Agent Architecture (DAG StateGraph)](#1-langgraph-multi-agent-architecture-dag-stategraph)
   - [2. Biometric & Nutritional Science Engine](#2-biometric--nutritional-science-engine)
   - [3. Multi-Model Fallback & API Resilience](#3-multi-model-fallback--api-resilience)
   - [4. Conversational Coaching & Contextual Q&A](#4-conversational-coaching--contextual-qa)
@@ -65,15 +65,15 @@ Rather than relying on a single monolithic prompt to handle nutrition, workouts,
 
 ## 🔬 Deep Dive: Core Concepts & Methodologies
 
-### 1. Agno Multi-Agent Framework
+### 1. LangGraph Multi-Agent Architecture (DAG StateGraph)
 
-**What is Agno?**
-[Agno](https://github.com/agno-agi/agno) is an agent framework designed to build autonomous, multi-modal, and tool-augmented agents.
+**What is LangGraph?**
+[LangGraph](https://github.com/langchain-ai/langgraph) is an enterprise-standard framework designed by LangChain for coordinating multi-actor agent workflows using directed graph structures (nodes, edges, and state).
 
-**Why specialized agents instead of one prompt?**
-- **Domain Focus**: A dietary agent configured with sports dietitian instructions delivers higher fidelity macronutrient breakdowns than a generalist model trying to write both recipes and squat cues simultaneously.
-- **Independent Context Tuning**: The Dietary Agent receives nutritional rules; the Fitness Agent receives biomechanical and progressive overload guidelines; the Grocery Agent receives parsing instructions.
-- **Modularity & Scalability**: Adding a new specialist (e.g., a Sleep & Recovery Agent) requires only registering a new agent instance without refactoring existing logic.
+**Why a StateGraph DAG instead of a single prompt or linear script?**
+- **Stateful Typed State (`TypedDict`)**: All agents write to and read from a typed `HealthPlanState`, guaranteeing strict contracts between agents.
+- **Concurrent Fan-Out / Fan-In Execution**: `START` branches out concurrently into both `dietary_specialist` and `fitness_coach`. The `grocery_specialist` node runs as a downstream dependency of the dietary node. This parallelism reduces latency while preserving data flow.
+- **Domain Specialization**: The Dietary Specialist focuses on nutritional chemistry and macro targets; the Fitness Coach focuses on CSCS biomechanics; the Grocery Specialist parses ingredients into aisle categories.
 
 ---
 

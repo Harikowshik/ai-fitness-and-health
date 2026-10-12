@@ -2,11 +2,15 @@ import os
 import json
 import time
 import warnings
+from typing import TypedDict, Dict, Any, Optional
+
 import streamlit as st
 from dotenv import load_dotenv
-from agno.agent import Agent
-from agno.run.agent import RunOutput
-from agno.models.google import Gemini
+
+# LangGraph & LangChain Google GenAI imports
+from langgraph.graph import StateGraph, START, END
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import SystemMessage, HumanMessage
 
 warnings.filterwarnings("ignore")
 load_dotenv()
@@ -84,6 +88,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ---------------------------------------------------------
+# Physiological & Nutritional Science Engine (Deterministic)
+# ---------------------------------------------------------
 def calculate_health_metrics(age, weight, height, sex, activity_level, goal, diet):
     """Calculates BMI, BMR, TDEE, target calories, macro distribution and daily water goal."""
     height_m = height / 100.0
@@ -167,13 +174,16 @@ def calculate_health_metrics(age, weight, height, sex, activity_level, goal, die
         "water_l": water_liters
     }
 
-def run_agent_with_fallback(agent_factory, prompt, api_key, preferred_model):
+# ---------------------------------------------------------
+# LLM Resilient Invoker with Multi-Model Fallback
+# ---------------------------------------------------------
+def invoke_with_fallback(system_prompt: str, user_prompt: str, api_key: str, preferred_model: str):
     """
-    Executes an Agno agent with automatic fallback across models.
-    Catches 503 high-demand errors or JSON error strings and retries with alternative Gemini models.
+    Executes an LLM call with automated cascade across Gemini models to handle
+    temporary 503 capacity spikes or 429 rate limit exceptions.
     """
     candidate_models = [preferred_model]
-    backup_pool = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-pro"]
+    backup_pool = ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"]
     for m in backup_pool:
         if m not in candidate_models:
             candidate_models.append(m)
@@ -181,18 +191,25 @@ def run_agent_with_fallback(agent_factory, prompt, api_key, preferred_model):
     last_err = ""
     for candidate in candidate_models:
         try:
-            model = Gemini(id=candidate, api_key=api_key)
-            agent = agent_factory(model)
-            response: RunOutput = agent.run(prompt)
+            llm = ChatGoogleGenerativeAI(
+                model=candidate,
+                google_api_key=api_key,
+                temperature=0.7
+            )
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ]
+            response = llm.invoke(messages)
             content = response.content if hasattr(response, 'content') else str(response)
             
-            # Detect JSON error responses returned as text content (e.g. 503 high demand or 429 quota)
+            # Detect JSON error string responses returned from proxy or SDK
             if isinstance(content, str):
                 trimmed = content.strip()
                 if (trimmed.startswith('{"error"') or trimmed.startswith("{ 'error'") or 
                     '"code": 503' in trimmed or 'UNAVAILABLE' in trimmed or 
                     '"code": 429' in trimmed or 'RESOURCE_EXHAUSTED' in trimmed):
-                    last_err = f"Model {candidate} is busy ({trimmed[:80]}...)"
+                    last_err = f"Model {candidate} capacity busy"
                     continue
                 
             return content, candidate
@@ -202,6 +219,100 @@ def run_agent_with_fallback(agent_factory, prompt, api_key, preferred_model):
             
     raise RuntimeError(f"All Gemini models were temporarily busy. Details: {last_err}")
 
+# ---------------------------------------------------------
+# LangGraph Multi-Agent Architecture
+# ---------------------------------------------------------
+
+class HealthPlanState(TypedDict):
+    user_profile: str
+    api_key: str
+    model_name: str
+    dietary_plan: str
+    fitness_plan: str
+    grocery_list: str
+    dietary_model: str
+    fitness_model: str
+    grocery_model: str
+
+def dietary_node(state: HealthPlanState) -> Dict[str, Any]:
+    """LangGraph Node: Dietary Specialist Agent"""
+    system_prompt = (
+        "You are an elite registered sports dietitian.\n"
+        "Consider user biometrics, macro targets, dietary preference, and goal.\n"
+        "Structure a realistic, appetizing daily meal plan: Breakfast, Lunch, Dinner, and 1-2 Smart Snacks.\n"
+        "List key ingredients, approximate portion sizes, and estimated protein/carbs/fat for each meal.\n"
+        "Strictly adhere to any allergy or restriction stated by the user.\n"
+        "Provide actionable, clean Markdown output."
+    )
+    content, used_model = invoke_with_fallback(
+        system_prompt=system_prompt,
+        user_prompt=state["user_profile"],
+        api_key=state["api_key"],
+        preferred_model=state["model_name"]
+    )
+    return {"dietary_plan": content, "dietary_model": used_model}
+
+def fitness_node(state: HealthPlanState) -> Dict[str, Any]:
+    """LangGraph Node: Certified Fitness Coach Agent"""
+    system_prompt = (
+        "You are a certified strength and conditioning coach (CSCS).\n"
+        "Formulate a structured weekly workout schedule tailored to the user's goal and equipment availability.\n"
+        "Include Warm-up, Main Exercises (sets, reps, rest intervals), and Cool-down.\n"
+        "Highlight key form safety cues and progressive overload principles.\n"
+        "Tailor volume and exercises away from any noted injuries."
+    )
+    content, used_model = invoke_with_fallback(
+        system_prompt=system_prompt,
+        user_prompt=state["user_profile"],
+        api_key=state["api_key"],
+        preferred_model=state["model_name"]
+    )
+    return {"fitness_plan": content, "fitness_model": used_model}
+
+def grocery_node(state: HealthPlanState) -> Dict[str, Any]:
+    """LangGraph Node: Smart Grocery Specialist Agent (extracts from dietary plan)"""
+    system_prompt = (
+        "You are an expert grocery logistics and meal-prep organizer.\n"
+        "Extract all ingredients needed to prepare the meals in the dietary plan.\n"
+        "Group them neatly under: 🥦 Fresh Produce, 🥩 Proteins & Dairy/Plant Alternatives, 🌾 Pantry & Grains, 🫒 Healthy Fats & Condiments.\n"
+        "Format as a clean markdown checklist (- [ ] Item (est. qty))."
+    )
+    content, used_model = invoke_with_fallback(
+        system_prompt=system_prompt,
+        user_prompt=f"Extract grocery list from this meal plan:\n{state['dietary_plan']}",
+        api_key=state["api_key"],
+        preferred_model=state["model_name"]
+    )
+    return {"grocery_list": content, "grocery_model": used_model}
+
+def create_health_planner_graph():
+    """
+    Constructs the LangGraph StateGraph DAG:
+    START ─┬─► dietary_specialist ──► grocery_specialist ─┬─► END
+           └─► fitness_coach ────────────────────────────┘
+    """
+    workflow = StateGraph(HealthPlanState)
+    
+    workflow.add_node("dietary_specialist", dietary_node)
+    workflow.add_node("fitness_coach", fitness_node)
+    workflow.add_node("grocery_specialist", grocery_node)
+    
+    # Fan out from START to dietary and fitness in parallel
+    workflow.add_edge(START, "dietary_specialist")
+    workflow.add_edge(START, "fitness_coach")
+    
+    # Grocery list depends on the dietary plan output
+    workflow.add_edge("dietary_specialist", "grocery_specialist")
+    
+    # Fan in to END
+    workflow.add_edge("grocery_specialist", END)
+    workflow.add_edge("fitness_coach", END)
+    
+    return workflow.compile()
+
+# ---------------------------------------------------------
+# Streamlit Application
+# ---------------------------------------------------------
 def main():
     # Session state initialization
     if 'dietary_plan' not in st.session_state:
@@ -238,7 +349,7 @@ def main():
         <div class="hero-container">
             <div class="hero-title">🏋️‍♂️ AI Health & Fitness Planner Pro</div>
             <div class="hero-subtitle">
-                Powered by <strong>Agno AI Multi-Agent Architecture</strong> &amp; <strong>Google Gemini</strong>.
+                Powered by <strong>LangGraph Multi-Agent Architecture</strong> &amp; <strong>Google Gemini</strong>.
                 Precision meal plans, workout splits, smart grocery list extraction, macro targeting, and conversational coaching.
             </div>
         </div>
@@ -257,10 +368,9 @@ def main():
             help="Enter your Gemini API key from Google AI Studio"
         )
         
-        # gemini-3.6-flash is primary default because it has stable capacity
         model_name = st.selectbox(
             "Gemini Model",
-            options=["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-pro"],
+            options=["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"],
             index=0,
             help="Select the Gemini model variant. Automatic fallback is active if any model is busy."
         )
@@ -352,49 +462,8 @@ def main():
     generate_btn = st.button("🚀 Generate My Complete Health & Fitness Blueprint", type="primary", use_container_width=True)
 
     if generate_btn:
-        with st.spinner("🤖 Coordinating Dietary, Fitness & Grocery AI Agents with Gemini..."):
+        with st.spinner("🤖 Coordinating LangGraph StateGraph (Dietary, Fitness & Grocery Agents)..."):
             try:
-                def make_dietary_agent(mdl):
-                    return Agent(
-                        name="Dietary Expert",
-                        role="Provides personalized dietary, macro, and meal recommendations",
-                        model=mdl,
-                        instructions=[
-                            "You are an elite registered sports dietitian.",
-                            "Consider user biometrics, macro targets, dietary preference, and goal.",
-                            "Structure a realistic, appetizing daily meal plan: Breakfast, Lunch, Dinner, and 1-2 Smart Snacks.",
-                            "List key ingredients, approximate portion sizes, and estimated protein/carbs/fat for each meal.",
-                            "Strictly adhere to any allergy or restriction stated by the user.",
-                            "Provide actionable, clean Markdown output.",
-                        ]
-                    )
-
-                def make_fitness_agent(mdl):
-                    return Agent(
-                        name="Fitness Expert",
-                        role="Provides personalized fitness routines and progressive overload splits",
-                        model=mdl,
-                        instructions=[
-                            "You are a certified strength and conditioning coach (CSCS).",
-                            "Formulate a structured weekly workout schedule tailored to the user's goal and equipment availability.",
-                            "Include Warm-up, Main Exercises (sets, reps, rest intervals), and Cool-down.",
-                            "Highlight key form safety cues and progressive overload principles.",
-                            "Tailor volume and exercises away from any noted injuries.",
-                        ]
-                    )
-
-                def make_grocery_agent(mdl):
-                    return Agent(
-                        name="Grocery Specialist",
-                        role="Extracts categorized grocery shopping items",
-                        model=mdl,
-                        instructions=[
-                            "Extract all ingredients needed to prepare the meals in the dietary plan.",
-                            "Group them neatly under: 🥦 Fresh Produce, 🥩 Proteins & Dairy/Plant Alternatives, 🌾 Pantry & Grains, 🫒 Healthy Fats & Condiments.",
-                            "Format as a clean markdown checklist (- [ ] Item (est. qty)).",
-                        ]
-                    )
-
                 user_profile = f"""
                 User Biometrics & Targets:
                 - Age: {age} | Sex: {sex} | Height: {height}cm | Weight: {weight}kg
@@ -409,23 +478,33 @@ def main():
                 - Special Notes / Limitations: {medical_notes if medical_notes else "None specified"}
                 """
 
-                # Run Dietary & Fitness agents with fallback resilience
-                dietary_content, dietary_used = run_agent_with_fallback(
-                    make_dietary_agent, user_profile, gemini_api_key, model_name
-                )
-                fitness_content, fitness_used = run_agent_with_fallback(
-                    make_fitness_agent, user_profile, gemini_api_key, model_name
-                )
-                grocery_content, grocery_used = run_agent_with_fallback(
-                    make_grocery_agent, f"Extract grocery list from this meal plan:\n{dietary_content}", gemini_api_key, model_name
-                )
+                # Compile and execute the LangGraph StateGraph
+                health_graph = create_health_planner_graph()
+                initial_state: HealthPlanState = {
+                    "user_profile": user_profile,
+                    "api_key": gemini_api_key,
+                    "model_name": model_name,
+                    "dietary_plan": "",
+                    "fitness_plan": "",
+                    "grocery_list": "",
+                    "dietary_model": "",
+                    "fitness_model": "",
+                    "grocery_model": ""
+                }
 
-                if dietary_used != model_name:
-                    st.info(f"ℹ️ Model notice: Switched to **{dietary_used}** for stable execution.")
+                final_state = health_graph.invoke(initial_state)
+
+                for role, mod_used in [
+                    ("Dietary Specialist", final_state.get("dietary_model")),
+                    ("Fitness Coach", final_state.get("fitness_model")),
+                    ("Grocery Specialist", final_state.get("grocery_model"))
+                ]:
+                    if mod_used and mod_used != model_name:
+                        st.info(f"ℹ️ Model notice ({role}): Switched to **{mod_used}** for stable execution.")
 
                 st.session_state.dietary_plan = {
                     "why_this_plan_works": f"Precision {m['target_calories']} kcal intake with {m['protein_g']}g protein tailored for {fitness_goals} ({dietary_preferences}).",
-                    "meal_plan": dietary_content,
+                    "meal_plan": final_state.get("dietary_plan", ""),
                     "important_considerations": f"""
                     • Hydration Target: Aim for at least {m['water_l']} Liters of water daily
                     • Protein Distribution: Distribute {m['protein_g']}g across 3-4 meals to optimize protein synthesis
@@ -436,7 +515,7 @@ def main():
 
                 st.session_state.fitness_plan = {
                     "goals": f"Progressive overload stimulus tailored for {fitness_goals}",
-                    "routine": fitness_content,
+                    "routine": final_state.get("fitness_plan", ""),
                     "tips": """
                     • Progressive Overload: Aim to increase reps or weight gradually week over week
                     • Recovery Window: Prioritize 7-9 hours of restful sleep every night
@@ -445,7 +524,7 @@ def main():
                     """
                 }
 
-                st.session_state.grocery_list = grocery_content
+                st.session_state.grocery_list = final_state.get("grocery_list", "")
                 st.session_state.user_summary = user_profile
                 st.session_state.water_target_l = m['water_l']
                 st.session_state.plans_generated = True
@@ -548,7 +627,7 @@ def main():
 
         # Combined Markdown Export
         combined_report = f"""# Personalized AI Health & Fitness Blueprint Pro
-Generated with Agno AI Agent & Google Gemini
+Generated with LangGraph Multi-Agent Architecture & Google Gemini
 
 ## User Profile & Targets
 {st.session_state.user_summary}
@@ -604,18 +683,13 @@ Generated with Agno AI Agent & Google Gemini
         if question_to_run:
             with st.spinner("AI Coach is formulating your advice..."):
                 try:
-                    def make_qa_agent(mdl):
-                        return Agent(
-                            name="Fitness & Nutrition Coach",
-                            model=mdl,
-                            instructions=[
-                                "You are an elite, supportive certified fitness and nutrition coach.",
-                                "Answer using the context of the user's generated dietary and fitness plan.",
-                                "Provide clear, concise, actionable, and encouraging recommendations.",
-                            ]
-                        )
+                    coach_system_prompt = (
+                        "You are an elite, supportive certified fitness and nutrition coach.\n"
+                        "Answer using the context of the user's generated dietary and fitness plan.\n"
+                        "Provide clear, concise, actionable, and encouraging recommendations."
+                    )
 
-                    context = f"""
+                    coach_context = f"""
                     User Dietary Plan:
                     {st.session_state.dietary_plan.get('meal_plan', '')}
 
@@ -625,8 +699,11 @@ Generated with Agno AI Agent & Google Gemini
                     User Question: {question_to_run}
                     """
 
-                    answer, qa_used = run_agent_with_fallback(
-                        make_qa_agent, context, gemini_api_key, model_name
+                    answer, qa_used = invoke_with_fallback(
+                        system_prompt=coach_system_prompt,
+                        user_prompt=coach_context,
+                        api_key=gemini_api_key,
+                        preferred_model=model_name
                     )
                     st.session_state.qa_pairs.insert(0, (question_to_run, answer))
                 except Exception as e:
