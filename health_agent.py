@@ -177,13 +177,41 @@ def calculate_health_metrics(age, weight, height, sex, activity_level, goal, die
 # ---------------------------------------------------------
 # LLM Resilient Invoker with Multi-Model Fallback
 # ---------------------------------------------------------
+def extract_text(content: Any) -> str:
+    """Extract clean string text from LangChain message content (str, list of dicts/blocks, or objects)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(str(item.get("text", item)))
+            elif hasattr(item, "text"):
+                parts.append(str(item.text))
+            else:
+                parts.append(str(item))
+        return "".join(parts)
+    if hasattr(content, "text"):
+        return str(content.text)
+    return str(content)
+
 def invoke_with_fallback(system_prompt: str, user_prompt: str, api_key: str, preferred_model: str):
     """
     Executes an LLM call with automated cascade across Gemini models to handle
     temporary 503 capacity spikes or 429 rate limit exceptions.
     """
     candidate_models = [preferred_model]
-    backup_pool = ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"]
+    backup_pool = [
+        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-3.6-flash"
+    ]
     for m in backup_pool:
         if m not in candidate_models:
             candidate_models.append(m)
@@ -201,16 +229,16 @@ def invoke_with_fallback(system_prompt: str, user_prompt: str, api_key: str, pre
                 HumanMessage(content=user_prompt)
             ]
             response = llm.invoke(messages)
-            content = response.content if hasattr(response, 'content') else str(response)
+            raw_content = response.content if hasattr(response, 'content') else str(response)
+            content = extract_text(raw_content)
             
             # Detect JSON error string responses returned from proxy or SDK
-            if isinstance(content, str):
-                trimmed = content.strip()
-                if (trimmed.startswith('{"error"') or trimmed.startswith("{ 'error'") or 
-                    '"code": 503' in trimmed or 'UNAVAILABLE' in trimmed or 
-                    '"code": 429' in trimmed or 'RESOURCE_EXHAUSTED' in trimmed):
-                    last_err = f"Model {candidate} capacity busy"
-                    continue
+            trimmed = content.strip()
+            if (trimmed.startswith('{"error"') or trimmed.startswith("{ 'error'") or 
+                '"code": 503' in trimmed or 'UNAVAILABLE' in trimmed or 
+                '"code": 429' in trimmed or 'RESOURCE_EXHAUSTED' in trimmed):
+                last_err = f"Model {candidate} capacity busy"
+                continue
                 
             return content, candidate
         except Exception as ex:
@@ -370,7 +398,15 @@ def main():
         
         model_name = st.selectbox(
             "Gemini Model",
-            options=["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"],
+            options=[
+                "gemini-2.5-flash-lite",
+                "gemini-3.5-flash-lite",
+                "gemini-3.7-flash",
+                "gemini-3.8-flash",
+                "gemini-flash-latest",
+                "gemini-2.5-flash",
+                "gemini-3.6-flash"
+            ],
             index=0,
             help="Select the Gemini model variant. Automatic fallback is active if any model is busy."
         )
@@ -504,7 +540,7 @@ def main():
 
                 st.session_state.dietary_plan = {
                     "why_this_plan_works": f"Precision {m['target_calories']} kcal intake with {m['protein_g']}g protein tailored for {fitness_goals} ({dietary_preferences}).",
-                    "meal_plan": final_state.get("dietary_plan", ""),
+                    "meal_plan": extract_text(final_state.get("dietary_plan", "")),
                     "important_considerations": f"""
                     • Hydration Target: Aim for at least {m['water_l']} Liters of water daily
                     • Protein Distribution: Distribute {m['protein_g']}g across 3-4 meals to optimize protein synthesis
@@ -515,7 +551,7 @@ def main():
 
                 st.session_state.fitness_plan = {
                     "goals": f"Progressive overload stimulus tailored for {fitness_goals}",
-                    "routine": final_state.get("fitness_plan", ""),
+                    "routine": extract_text(final_state.get("fitness_plan", "")),
                     "tips": """
                     • Progressive Overload: Aim to increase reps or weight gradually week over week
                     • Recovery Window: Prioritize 7-9 hours of restful sleep every night
@@ -524,7 +560,7 @@ def main():
                     """
                 }
 
-                st.session_state.grocery_list = final_state.get("grocery_list", "")
+                st.session_state.grocery_list = extract_text(final_state.get("grocery_list", ""))
                 st.session_state.user_summary = user_profile
                 st.session_state.water_target_l = m['water_l']
                 st.session_state.plans_generated = True
@@ -550,7 +586,7 @@ def main():
             st.markdown("### 🎯 Why This Plan Works")
             st.info(st.session_state.dietary_plan.get("why_this_plan_works"))
             st.markdown("### 🍽️ Daily Meal Blueprint")
-            st.markdown(st.session_state.dietary_plan.get("meal_plan"))
+            st.markdown(extract_text(st.session_state.dietary_plan.get("meal_plan", "")))
             st.markdown("### ⚠️ Key Nutrition Rules")
             for c in st.session_state.dietary_plan.get("important_considerations", "").split('\n'):
                 if c.strip():
@@ -560,7 +596,7 @@ def main():
             st.markdown("### 🎯 Training Objectives")
             st.success(st.session_state.fitness_plan.get("goals"))
             st.markdown("### 🏃‍♂️ Workout Program")
-            st.markdown(st.session_state.fitness_plan.get("routine"))
+            st.markdown(extract_text(st.session_state.fitness_plan.get("routine", "")))
             st.markdown("### 💡 Coach's Pro Tips")
             for t in st.session_state.fitness_plan.get("tips", "").split('\n'):
                 if t.strip():
@@ -569,7 +605,7 @@ def main():
         with tab_groc:
             st.markdown("### 🛒 Smart Grocery Shopping List")
             st.caption("Aisle-categorized ingredients for meal prep:")
-            st.markdown(st.session_state.grocery_list)
+            st.markdown(extract_text(st.session_state.grocery_list))
 
         with tab_water:
             st.markdown("### 💧 Daily Water & Hydration Tracker")
@@ -639,7 +675,7 @@ Generated with LangGraph Multi-Agent Architecture & Google Gemini
 {st.session_state.dietary_plan.get('why_this_plan_works')}
 
 ### Meal Plan
-{st.session_state.dietary_plan.get('meal_plan')}
+{extract_text(st.session_state.dietary_plan.get('meal_plan', ''))}
 
 ### Important Considerations
 {st.session_state.dietary_plan.get('important_considerations')}
@@ -651,7 +687,7 @@ Generated with LangGraph Multi-Agent Architecture & Google Gemini
 {st.session_state.fitness_plan.get('goals')}
 
 ### Workout Routine
-{st.session_state.fitness_plan.get('routine')}
+{extract_text(st.session_state.fitness_plan.get('routine', ''))}
 
 ### Coaching Tips
 {st.session_state.fitness_plan.get('tips')}
@@ -659,7 +695,7 @@ Generated with LangGraph Multi-Agent Architecture & Google Gemini
 ---
 
 ## 🛒 Smart Grocery Shopping List
-{st.session_state.grocery_list}
+{extract_text(st.session_state.grocery_list)}
 """
         st.download_button(
             label="📥 Download Complete Plan + Grocery List (Markdown)",
@@ -691,10 +727,10 @@ Generated with LangGraph Multi-Agent Architecture & Google Gemini
 
                     coach_context = f"""
                     User Dietary Plan:
-                    {st.session_state.dietary_plan.get('meal_plan', '')}
+                    {extract_text(st.session_state.dietary_plan.get('meal_plan', ''))}
 
                     User Fitness Plan:
-                    {st.session_state.fitness_plan.get('routine', '')}
+                    {extract_text(st.session_state.fitness_plan.get('routine', ''))}
 
                     User Question: {question_to_run}
                     """
@@ -705,7 +741,7 @@ Generated with LangGraph Multi-Agent Architecture & Google Gemini
                         api_key=gemini_api_key,
                         preferred_model=model_name
                     )
-                    st.session_state.qa_pairs.insert(0, (question_to_run, answer))
+                    st.session_state.qa_pairs.insert(0, (question_to_run, extract_text(answer)))
                 except Exception as e:
                     st.error(f"❌ Error getting answer: {e}")
 
@@ -715,7 +751,7 @@ Generated with LangGraph Multi-Agent Architecture & Google Gemini
                 with st.chat_message("user"):
                     st.write(q)
                 with st.chat_message("assistant"):
-                    st.markdown(a)
+                    st.markdown(extract_text(a))
 
 if __name__ == "__main__":
     main()

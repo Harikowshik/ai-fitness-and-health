@@ -39,15 +39,21 @@ Rather than relying on a single monolithic prompt to handle nutrition, workouts,
                          │     (BMI, BMR, TDEE, Macros, Water)   │
                          └───────────────────┬───────────────────┘
                                              │
-               ┌─────────────────────────────┼─────────────────────────────┐
-               │                             │                             │
-    ┌──────────▼──────────┐       ┌──────────▼──────────┐       ┌──────────▼──────────┐
-    │  Dietary Specialist │       │ Fitness Coach Agent │       │  Grocery Specialist │
-    │        Agent        │       │                     │       │        Agent        │
-    │ (Meals & Nutrition) │       │ (Routines & Splits) │       │ (Aisle Categorized) │
-    └──────────┬──────────┘       └──────────┬──────────┘       └──────────┬──────────┘
-               │                             │                             │
-               └─────────────────────────────┼─────────────────────────────┘
+                     ┌───────────────────────┴───────────────────────┐
+                     │ (Parallel Fan-Out)                            │
+          ┌──────────▼──────────┐                         ┌──────────▼──────────┐
+          │  Dietary Specialist │                         │ Fitness Coach Agent │
+          │        Agent        │                         │                     │
+          │ (Meals & Nutrition) │                         │ (Routines & Splits) │
+          └──────────┬──────────┘                         └──────────┬──────────┘
+                     │ (Generated Meal Plan)                         │
+          ┌──────────▼──────────┐                                    │
+          │  Grocery Specialist │                                    │
+          │        Agent        │                                    │
+          │ (Aisle Categorized) │                                    │
+          └──────────┬──────────┘                                    │
+                     │ (Parallel Fan-In)                             │
+                     └───────────────────────┬───────────────────────┘
                                              │
                                   ┌──────────▼──────────┐
                                   │ Streamlit Dashboard │
@@ -59,6 +65,17 @@ Rather than relying on a single monolithic prompt to handle nutrition, workouts,
                                   │ Interactive AI Coach│
                                   │ (Contextual Q&A)    │
                                   └─────────────────────┘
+```
+
+```mermaid
+graph TD
+    User["👤 User Profile Input"] --> Engine["📊 Biometric & Macro Calculation Engine"]
+    Engine -->|Parallel Fan-Out| Diet["🥗 Dietary Specialist Agent<br/>(Meals & Nutrition)"]
+    Engine -->|Parallel Fan-Out| Fit["🏋️‍♂️ Fitness Coach Agent<br/>(Routines & Splits)"]
+    Diet -->|Sequential Dependency<br/>(passes Meal Plan)| Groc["🛒 Grocery Specialist Agent<br/>(Aisle-Categorized Checklist)"]
+    Groc -->|Parallel Fan-In| Streamlit["🖥️ Streamlit Dashboard<br/>(Tabs, Metrics, Timer, Export)"]
+    Fit -->|Parallel Fan-In| Streamlit
+    Streamlit --> Coach["💬 Interactive AI Coach<br/>(Contextual Q&A)"]
 ```
 
 ---
