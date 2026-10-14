@@ -67,17 +67,6 @@ Rather than relying on a single monolithic prompt to handle nutrition, workouts,
                                   └─────────────────────┘
 ```
 
-```mermaid
-graph TD
-    User["👤 User Profile Input"] --> Engine["📊 Biometric & Macro Calculation Engine"]
-    Engine -->|Parallel Fan-Out| Diet["🥗 Dietary Specialist Agent<br/>(Meals & Nutrition)"]
-    Engine -->|Parallel Fan-Out| Fit["🏋️‍♂️ Fitness Coach Agent<br/>(Routines & Splits)"]
-    Diet -->|Sequential Dependency<br/>(passes Meal Plan)| Groc["🛒 Grocery Specialist Agent<br/>(Aisle-Categorized Checklist)"]
-    Groc -->|Parallel Fan-In| Streamlit["🖥️ Streamlit Dashboard<br/>(Tabs, Metrics, Timer, Export)"]
-    Fit -->|Parallel Fan-In| Streamlit
-    Streamlit --> Coach["💬 Interactive AI Coach<br/>(Contextual Q&A)"]
-```
-
 ---
 
 ## 🔬 Deep Dive: Core Concepts & Methodologies
